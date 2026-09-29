@@ -85,6 +85,8 @@ export function useDecayFilter(options: UseDecayFilterOptions = {}): UseDecayFil
     if (filter.value.types.length) query.types = filter.value.types.join(',')
     if (filter.value.severities.length) query.sev = filter.value.severities.join(',')
     if (filter.value.pigments.length) query.pig = filter.value.pigments.join(',')
+    if (filter.value.cells.length) query.cells = filter.value.cells.join(',')
+    if (filter.value.onlyPending) query.pend = '1'
     if (filter.value.onlyUnrepaired) query.open = '1'
     await router.replace({ query })
   }
@@ -103,6 +105,10 @@ export function useDecayFilter(options: UseDecayFilterOptions = {}): UseDecayFil
         (SEVERITIES as string[]).includes(item)
       ),
       pigments: toArray(query.pig),
+      cells: toArray(query.cells)
+        .map((item) => Number(item))
+        .filter((item) => Number.isInteger(item) && item >= 1 && item <= 9),
+      onlyPending: toBool(query.pend),
       onlyUnrepaired: toBool(query.open)
     })
   }

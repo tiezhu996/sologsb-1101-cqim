@@ -7,11 +7,25 @@ import { ArrowLeft, Delete, Edit, Plus, Warning } from '@element-plus/icons-vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import SeverityTag from '@/components/common/SeverityTag.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
+import SchematicCanvas from '@/components/position/SchematicCanvas.vue'
+import PositionField from '@/components/position/PositionField.vue'
+import LocationTag from '@/components/position/LocationTag.vue'
+import LocationDialog from '@/components/position/LocationDialog.vue'
 import { useHallStore } from '@/stores/hallStore'
 import { useDecayStore } from '@/stores/decayStore'
 import { ELEMENT_POSITIONS, ELEMENT_STATUSES, type Element, type ElementPosition, type ElementStatus } from '@/types/element'
 import { PATTERN_NAMES, PIGMENTS, type PaintLayer, type PatternName, type Pigment } from '@/types/layer'
 import { DECAY_TYPES, SEVERITIES, type Decay, type DecayType, type Severity } from '@/types/decay'
+import type { DecayLocation } from '@/types/position'
+import {
+  countByCell,
+  countPendingUnrepaired,
+  gridLocation,
+  isPendingLocation,
+  locationMatches,
+  normalizeLocation,
+  type MarkerInput
+} from '@/utils/position'
 
 const route = useRoute()
 const router = useRouter()
@@ -66,13 +80,23 @@ const decayForm = reactive<{
   severity: Severity
   areaCm2: number
   causeGuess: string
+  location: DecayLocation
 }>({
   layerId: '',
   type: '起甲',
   severity: '轻度',
   areaCm2: 10,
-  causeGuess: ''
+  causeGuess: '',
+  location: gridLocation(5)
 })
+
+/** 构件示意图上的区域筛选：cell=0 表示未选；pendingOnly 单独看待定位 */
+const schematicCell = ref<number | null>(null)
+const schematicPendingOnly = ref(false)
+
+/** 定位对话框 */
+const locationDialogVisible = ref(false)
+const locatingDecayId = ref<string | null>(null)
 
 const elementRules: FormRules = {
   name: [{ required: true, message: '请填写构件名称', trigger: 'blur' }],
@@ -177,6 +201,119 @@ const selectedStats = computed(() => {
 
 function layerDecays(layerId: string): Decay[] {
   return hallStore.decaysOfLayer(layerId)
+}
+
+/** 层位展开表中实际显示的病害：叠加构件示意图的区域筛选 */
+function visibleLayerDecays(layerId: string): Decay[] {
+  const list = layerDecays(layerId)
+  if (!hasSchematicFilter.value) return list
+  return list.filter((decay) =>
+    locationMatches(decay.location, schematicCell.value === null ? [] : [schematicCell.value], schematicPendingOnly.value)
+  )
+}
+
+/** 当前构件的全部病害（跨层位） */
+const elementDecays = computed<Decay[]>(() => {
+  const element = selectedElement.value
+  if (!element) return []
+  const layerIds = new Set(hallStore.layersOfElement(element.id).map((layer) => layer.id))
+  return hallStore.decays.filter((decay) => layerIds.has(decay.layerId))
+})
+
+/** 按示意图区域筛选后的构件病害（同时作用于示意图与层位展开表） */
+const visibleElementDecays = computed<Decay[]>(() => {
+  if (schematicCell.value === null && !schematicPendingOnly.value) return elementDecays.value
+  return elementDecays.value.filter((decay) =>
+    locationMatches(decay.location, schematicCell.value === null ? [] : [schematicCell.value], schematicPendingOnly.value)
+  )
+})
+
+/** 九宫格各格数量（未修复数显示在角标上，条带按锚定格计入） */
+const elementCellCounts = computed(() => countByCell(elementDecays.value))
+
+/** 待定位（未修复）数量 */
+const elementPendingUnrepaired = computed(() => countPendingUnrepaired(elementDecays.value))
+
+/** 示意图是否处于区域筛选态 */
+const hasSchematicFilter = computed(() => schematicCell.value !== null || schematicPendingOnly.value)
+
+/** 层位 → 文字，用于标记气泡 */
+function markerLayerLabel(decay: Decay): string {
+  const layer = selectedLayers.value.find((item) => item.id === decay.layerId)
+  const layerText = layer ? `第 ${layer.level} 层 ${layer.patternName}/${layer.pigment}` : '层位已删除'
+  return `${decay.type} · ${decay.severity} · ${layerText}${isPendingLocation(decay.location) ? ' · 待定位' : ''}${
+    decay.repaired ? ' · 已修复' : ''
+  }`
+}
+
+/** 构件示意图上的全部点标记（含层位归属文案） */
+const elementMarkers = computed<MarkerInput[]>(() =>
+  elementDecays.value.map((decay) => ({
+    id: decay.id,
+    severity: decay.severity,
+    location: normalizeLocation(decay.location),
+    repaired: decay.repaired,
+    label: markerLayerLabel(decay)
+  }))
+)
+
+function selectSchematicCell(cell: number): void {
+  if (schematicPendingOnly.value) schematicPendingOnly.value = false
+  schematicCell.value = schematicCell.value === cell ? null : cell
+}
+
+function toggleSchematicPending(): void {
+  schematicPendingOnly.value = !schematicPendingOnly.value
+  if (schematicPendingOnly.value) schematicCell.value = null
+}
+
+function clearSchematicFilter(): void {
+  schematicCell.value = null
+  schematicPendingOnly.value = false
+}
+
+/** 点击示意图上的病害标记：展开所属层位并高亮 */
+function handleMarkerClick(decayId: string): void {
+  const decay = elementDecays.value.find((item) => item.id === decayId)
+  if (!decay) return
+  expandedLayerIds.value = Array.from(new Set([...expandedLayerIds.value, decay.layerId]))
+  layerTableKey.value += 1
+}
+
+/** 定位对话框当前病害 */
+const locatingDecay = computed<Decay | null>(
+  () => elementDecays.value.find((decay) => decay.id === locatingDecayId.value) ?? null
+)
+
+/** 定位对话框底图：同构件其他病害 */
+const locatingSiblings = computed<MarkerInput[]>(() =>
+  elementDecays.value
+    .filter((decay) => decay.id !== locatingDecayId.value)
+    .map((decay) => ({
+      id: decay.id,
+      severity: decay.severity,
+      location: normalizeLocation(decay.location),
+      repaired: decay.repaired,
+      label: markerLayerLabel(decay)
+    }))
+)
+
+const locatingContext = computed(() => {
+  const decay = locatingDecay.value
+  if (!decay || !selectedElement.value) return ''
+  const layer = selectedLayers.value.find((item) => item.id === decay.layerId)
+  const hallName = hall.value?.name ?? ''
+  return `${hallName} · ${selectedElement.value.name}${layer ? ` · 第 ${layer.level} 层 ${layer.patternName}` : ''}`
+})
+
+function openLocationDialog(decay: Decay): void {
+  locatingDecayId.value = decay.id
+  locationDialogVisible.value = true
+}
+
+async function saveLocation(payload: { decayId: string; location: DecayLocation }): Promise<void> {
+  await decayStore.updateDecay(payload.decayId, { location: payload.location })
+  ElMessage.success('病害位置已保存')
 }
 
 function layerSeverity(layerId: string): Severity | null {
@@ -333,6 +470,8 @@ function openDecayDialog(layerId: string): void {
   decayForm.severity = '轻度'
   decayForm.areaCm2 = 10
   decayForm.causeGuess = ''
+  // 默认取中央格已定位；录入人可在示意图上点选其他格或改为横向比例
+  decayForm.location = gridLocation(5)
   decayDialogVisible.value = true
 }
 
@@ -346,6 +485,7 @@ async function submitDecay(): Promise<void> {
     severity: decayForm.severity,
     areaCm2: decayForm.areaCm2,
     causeGuess: decayForm.causeGuess.trim() || '待现场复核',
+    location: normalizeLocation(decayForm.location),
     repaired: false,
     repairedAt: null
   })
@@ -512,6 +652,59 @@ const severityOptions = SEVERITIES
 
             <div class="section-card">
               <div class="section-card__head">
+                <div>
+                  <h3>构件示意 · 病害位置</h3>
+                  <p class="muted">
+                    三行三列区域定位，点标记可查看对应病害；数字角标为该格未修复数量（条带按横向中点所在格计入）。
+                  </p>
+                </div>
+                <div class="schematic-toolbar">
+                  <el-button
+                    size="small"
+                    :type="schematicPendingOnly ? 'warning' : 'default'"
+                    @click="toggleSchematicPending"
+                  >
+                    待定位 {{ elementPendingUnrepaired }}
+                  </el-button>
+                  <el-button v-if="hasSchematicFilter" size="small" text type="primary" @click="clearSchematicFilter">
+                    清除区域筛选
+                  </el-button>
+                </div>
+              </div>
+
+              <SchematicCanvas
+                :markers="elementMarkers"
+                :selected-cell="schematicCell"
+                :show-cell-counts="true"
+                :cell-counts="elementCellCounts"
+                @cell-click="selectSchematicCell"
+                @marker-click="handleMarkerClick"
+              />
+
+              <div class="schematic-legend">
+                <span class="muted">
+                  共 {{ elementDecays.length }} 条病害
+                  <template v-if="hasSchematicFilter">，区域内命中 {{ visibleElementDecays.length }} 条</template>
+                </span>
+                <div class="schematic-legend__guide">
+                  <span class="schematic-legend__label">上沿</span>
+                  <span class="schematic-legend__label">中部</span>
+                  <span class="schematic-legend__label">下沿</span>
+                  <span class="schematic-legend__sep">×</span>
+                  <span class="schematic-legend__label">左</span>
+                  <span class="schematic-legend__label">中</span>
+                  <span class="schematic-legend__label">右</span>
+                </div>
+                <div class="schematic-legend__severity">
+                  <span><i class="dot dot--heavy" />重度</span>
+                  <span><i class="dot dot--mid" />中度</span>
+                  <span><i class="dot dot--light" />轻度（同格分槽摆放）</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section-card">
+              <div class="section-card__head">
                 <h3>彩画层位</h3>
                 <el-button type="primary" size="small" :icon="Plus" @click="openLayerDialog()">新增层位</el-button>
               </div>
@@ -527,19 +720,30 @@ const severityOptions = SEVERITIES
                   <template #default="{ row }">
                     <div class="layer-decays">
                       <div class="layer-decays__head">
-                        <span>该层病害记录（{{ layerDecays(row.id).length }} 条）</span>
+                        <span>
+                          该层病害记录（{{ layerDecays(row.id).length }} 条
+                          <template v-if="hasSchematicFilter">
+                            ，区域内 {{ visibleLayerDecays(row.id).length }} 条
+                          </template>
+                          ）
+                        </span>
                         <el-button size="small" type="primary" plain :icon="Warning" @click="openDecayDialog(row.id)">
                           挂接病害
                         </el-button>
                       </div>
-                      <el-table v-if="layerDecays(row.id).length > 0" :data="layerDecays(row.id)" size="small">
+                      <el-table v-if="visibleLayerDecays(row.id).length > 0" :data="visibleLayerDecays(row.id)" size="small">
                         <el-table-column label="类型" prop="type" width="90" />
                         <el-table-column label="程度" width="130">
                           <template #default="{ row: decay }">
                             <SeverityTag :severity="decay.severity" :area-cm2="decay.areaCm2" size="small" plain />
                           </template>
                         </el-table-column>
-                        <el-table-column label="成因初判" prop="causeGuess" min-width="200" />
+                        <el-table-column label="位置" width="190">
+                          <template #default="{ row: decay }">
+                            <LocationTag :location="decay.location" detailed />
+                          </template>
+                        </el-table-column>
+                        <el-table-column label="成因初判" prop="causeGuess" min-width="180" />
                         <el-table-column label="修复状态" width="100">
                           <template #default="{ row: decay }">
                             <el-tag size="small" :type="decay.repaired ? 'success' : 'info'" effect="plain">
@@ -547,13 +751,16 @@ const severityOptions = SEVERITIES
                             </el-tag>
                           </template>
                         </el-table-column>
-                        <el-table-column label="操作" width="90">
+                        <el-table-column label="操作" width="150">
                           <template #default="{ row: decay }">
+                            <el-button size="small" type="primary" text @click="openLocationDialog(decay)">定位</el-button>
                             <el-button size="small" type="danger" text @click="removeDecay(decay)">删除</el-button>
                           </template>
                         </el-table-column>
                       </el-table>
-                      <p v-else class="muted layer-decays__empty">该层位尚未记录病害，可点击「挂接病害」新增。</p>
+                      <p v-else class="muted layer-decays__empty">
+                        {{ hasSchematicFilter ? '该区域内此层位没有病害，可清除区域筛选查看全部。' : '该层位尚未记录病害，可点击「挂接病害」新增。' }}
+                      </p>
                     </div>
                   </template>
                 </el-table-column>
@@ -684,12 +891,37 @@ const severityOptions = SEVERITIES
             placeholder="如：地仗层脱胶，受檐口渗水影响"
           />
         </el-form-item>
+        <el-form-item label="病害位置">
+          <PositionField
+            v-model="decayForm.location"
+            :severity="decayForm.severity"
+            :sibling-markers="
+              elementDecays
+                .filter((decay) => decay.layerId === decayForm.layerId)
+                .map((decay) => ({
+                  id: decay.id,
+                  severity: decay.severity,
+                  location: normalizeLocation(decay.location),
+                  repaired: decay.repaired,
+                  label: `${decay.type} · ${decay.severity}`
+                }))
+            "
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="decayDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submitDecay">保存病害</el-button>
       </template>
     </el-dialog>
+
+    <LocationDialog
+      v-model="locationDialogVisible"
+      :decay="locatingDecay"
+      :sibling-markers="locatingSiblings"
+      :context-label="locatingContext"
+      @save="saveLocation"
+    />
   </div>
 </template>
 
@@ -761,6 +993,64 @@ const severityOptions = SEVERITIES
 
 .full-width {
   width: 100%;
+}
+
+.schematic-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.schematic-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.schematic-legend__guide,
+.schematic-legend__severity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.schematic-legend__label {
+  color: #8c8479;
+}
+
+.schematic-legend__sep {
+  color: #b7ad9f;
+}
+
+.schematic-legend__severity span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #6b6257;
+}
+
+.dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.dot--heavy {
+  background: #c0392b;
+}
+
+.dot--mid {
+  background: #d68910;
+}
+
+.dot--light {
+  background: #1e8449;
 }
 
 @media (max-width: 900px) {

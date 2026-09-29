@@ -7,6 +7,9 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import FilterBar, { type FilterModel } from '@/components/common/FilterBar.vue'
 import SeverityTag from '@/components/common/SeverityTag.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
+import LocationTag from '@/components/position/LocationTag.vue'
+import PositionField from '@/components/position/PositionField.vue'
+import LocationDialog from '@/components/position/LocationDialog.vue'
 import { useDecayFilter } from '@/hooks/useDecayFilter'
 import { useHallStore } from '@/stores/hallStore'
 import { useDecayStore } from '@/stores/decayStore'
@@ -14,6 +17,8 @@ import { useRepairStore } from '@/stores/repairStore'
 import { DECAY_TYPES, type Decay, type DecayType, type Severity } from '@/types/decay'
 import { SEVERITIES } from '@/types/decay'
 import { formatArea, SEVERITY_COLOR } from '@/utils/severity'
+import { GRID_CELLS, cellLabel, normalizeLocation, type MarkerInput } from '@/utils/position'
+import type { DecayLocation } from '@/types/position'
 
 const router = useRouter()
 const hallStore = useHallStore()
@@ -45,7 +50,12 @@ const editForm = ref<{
   severity: Severity
   areaCm2: number
   causeGuess: string
-}>({ type: '起甲', severity: '轻度', areaCm2: 10, causeGuess: '' })
+  location: DecayLocation
+}>({ type: '起甲', severity: '轻度', areaCm2: 10, causeGuess: '', location: normalizeLocation(undefined) })
+
+/** 定位对话框 */
+const locationDialogVisible = ref(false)
+const locatingDecayId = ref<string | null>(null)
 
 const filterModel = computed<FilterModel>(() => ({
   keyword: filter.value.keyword,
@@ -55,6 +65,17 @@ const filterModel = computed<FilterModel>(() => ({
   sev: filter.value.severities,
   pig: filter.value.pigments
 }))
+
+/** 九宫格筛选的多选项：编号 1~9 */
+const cellFilterValue = computed<number[]>({
+  get: () => filter.value.cells,
+  set: (value) => patch({ cells: value })
+})
+
+const cellFilterOptions = Array.from({ length: GRID_CELLS }, (_, index) => {
+  const cell = index + 1
+  return { label: cellLabel(cell), value: cell }
+})
 
 const filterSelects = computed(() => [
   { key: 'halls', label: '殿宇', options: hallOptions.value },
@@ -89,6 +110,12 @@ function handleFilterChange(value: FilterModel): void {
     severities: (Array.isArray(value.sev) ? value.sev : []) as Severity[],
     pigments: Array.isArray(value.pig) ? value.pig : []
   })
+}
+
+/** FilterBar 重置：主筛选之外，位置区域与待定位条件一并清空 */
+function handleReset(): void {
+  reset()
+  patch({ cells: [], onlyPending: false })
 }
 
 function handleSwitch(value: boolean): void {
@@ -152,10 +179,31 @@ function openEdit(row: { decay: Decay }): void {
     type: row.decay.type,
     severity: row.decay.severity,
     areaCm2: row.decay.areaCm2,
-    causeGuess: row.decay.causeGuess
+    causeGuess: row.decay.causeGuess,
+    location: normalizeLocation(row.decay.location)
   }
   editDialogVisible.value = true
 }
+
+/** 编辑对话框底图：同构件其他病害 */
+const editSiblings = computed<MarkerInput[]>(() => {
+  const current = editingDecay.value
+  if (!current) return []
+  const layer = decayStore.layers.find((item) => item.id === current.layerId)
+  if (!layer) return []
+  const layerIds = new Set(
+    decayStore.layers.filter((item) => item.elementId === layer.elementId).map((item) => item.id)
+  )
+  return decayStore.decays
+    .filter((decay) => decay.id !== current.id && layerIds.has(decay.layerId))
+    .map((decay) => ({
+      id: decay.id,
+      severity: decay.severity,
+      location: normalizeLocation(decay.location),
+      repaired: decay.repaired,
+      label: `${decay.type} · ${decay.severity}`
+    }))
+})
 
 async function submitEdit(): Promise<void> {
   if (!editingDecay.value) return
@@ -163,10 +211,54 @@ async function submitEdit(): Promise<void> {
     type: editForm.value.type,
     severity: editForm.value.severity,
     areaCm2: editForm.value.areaCm2,
-    causeGuess: editForm.value.causeGuess.trim() || '待现场复核'
+    causeGuess: editForm.value.causeGuess.trim() || '待现场复核',
+    location: normalizeLocation(editForm.value.location)
   })
   editDialogVisible.value = false
   ElMessage.success('病害记录已更新')
+}
+
+/** 定位对话框：可从表格任一行直接打开 */
+const locatingDecay = computed<Decay | null>(
+  () => decayStore.decays.find((decay) => decay.id === locatingDecayId.value) ?? null
+)
+
+const locatingSiblings = computed<MarkerInput[]>(() => {
+  const current = locatingDecay.value
+  if (!current) return []
+  const layer = decayStore.layers.find((item) => item.id === current.layerId)
+  if (!layer) return []
+  const layerIds = new Set(
+    decayStore.layers.filter((item) => item.elementId === layer.elementId).map((item) => item.id)
+  )
+  return decayStore.decays
+    .filter((decay) => decay.id !== current.id && layerIds.has(decay.layerId))
+    .map((decay) => ({
+      id: decay.id,
+      severity: decay.severity,
+      location: normalizeLocation(decay.location),
+      repaired: decay.repaired,
+      label: `${decay.type} · ${decay.severity}`
+    }))
+})
+
+const locatingContext = computed(() => {
+  const decay = locatingDecay.value
+  if (!decay) return ''
+  const layer = decayStore.layers.find((item) => item.id === decay.layerId)
+  const element = layer ? decayStore.elements.find((item) => item.id === layer.elementId) : undefined
+  const hall = element ? hallStore.hallById(element.hallId) : undefined
+  return `${hall?.name ?? ''} · ${element?.name ?? ''}${layer ? ` · 第 ${layer.level} 层 ${layer.patternName}` : ''}`
+})
+
+function openLocate(row: { decay: Decay }): void {
+  locatingDecayId.value = row.decay.id
+  locationDialogVisible.value = true
+}
+
+async function saveLocation(payload: { decayId: string; location: DecayLocation }): Promise<void> {
+  await decayStore.updateDecay(payload.decayId, { location: payload.location })
+  ElMessage.success('病害位置已保存')
 }
 
 async function removeRow(row: { decay: Decay }): Promise<void> {
@@ -278,11 +370,35 @@ const severityPalette = SEVERITY_COLOR
       :selects="filterSelects"
       has-switch
       switch-label="仅未修复"
-      :switch-value="filter.onlyUnrepaired"      keyword-placeholder="按类型 / 颜料 / 成因 / 构件 搜索"
+      :switch-value="filter.onlyUnrepaired"      keyword-placeholder="按类型 / 颜料 / 成因 / 构件 / 位置 搜索"
       @change="handleFilterChange"
       @update:switch-value="handleSwitch"
-      @reset="reset"
+      @reset="handleReset"
     >
+      <template #extra>
+        <div class="loc-filter">
+          <span class="loc-filter__label">位置</span>
+          <el-select
+            v-model="cellFilterValue"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            clearable
+            placeholder="九宫格区域"
+            class="loc-filter__control"
+          >
+            <el-option v-for="option in cellFilterOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+          <el-tooltip content="只看旧记录中缺少位置、暂落中央格待现场确认的病害" placement="top">
+            <el-checkbox
+              :model-value="filter.onlyPending"
+              @update:model-value="(value: boolean) => patch({ onlyPending: value })"
+            >
+              待定位
+            </el-checkbox>
+          </el-tooltip>
+        </div>
+      </template>
       <template #actions>
         <el-tag v-if="selectedRows.length > 0" type="primary" effect="plain" round>
           已选 {{ selectedRows.length }} 条
@@ -340,6 +456,11 @@ const severityPalette = SEVERITY_COLOR
         <el-table-column label="彩画层位" min-width="180">
           <template #default="{ row }">{{ layerLabel(row.decay.layerId) }}</template>
         </el-table-column>
+        <el-table-column label="位置" min-width="190">
+          <template #default="{ row }">
+            <LocationTag :location="row.decay.location" detailed />
+          </template>
+        </el-table-column>
         <el-table-column label="成因初判" prop="decay.causeGuess" min-width="200" show-overflow-tooltip />
         <el-table-column label="修复" width="150">
           <template #default="{ row }">
@@ -351,9 +472,10 @@ const severityPalette = SEVERITY_COLOR
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text :icon="Edit" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" text type="primary" @click="openLocate(row)">定位</el-button>
             <el-button size="small" text :icon="Tools" @click="goRepair(row)">排工序</el-button>
             <el-button size="small" text type="primary" @click="goElements(row)">看层位</el-button>
             <el-button size="small" text @click="toggleRepaired(row)">
@@ -403,12 +525,27 @@ const severityPalette = SEVERITY_COLOR
         <el-form-item label="成因初判">
           <el-input v-model="editForm.causeGuess" type="textarea" :rows="3" maxlength="120" show-word-limit />
         </el-form-item>
+        <el-form-item label="病害位置">
+          <PositionField
+            v-model="editForm.location"
+            :severity="editForm.severity"
+            :sibling-markers="editSiblings"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
         <el-button type="primary" :icon="Plus" @click="submitEdit">保存修改</el-button>
       </template>
     </el-dialog>
+
+    <LocationDialog
+      v-model="locationDialogVisible"
+      :decay="locatingDecay"
+      :sibling-markers="locatingSiblings"
+      :context-label="locatingContext"
+      @save="saveLocation"
+    />
   </div>
 </template>
 
@@ -437,5 +574,20 @@ const severityPalette = SEVERITY_COLOR
 .repair-progress {
   margin-left: 6px;
   font-size: 12px;
+}
+
+.loc-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.loc-filter__label {
+  font-size: 13px;
+  color: #6b6257;
+}
+
+.loc-filter__control {
+  width: 200px;
 }
 </style>

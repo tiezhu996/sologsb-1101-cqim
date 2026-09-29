@@ -6,6 +6,7 @@ import {
   stampBackupTime,
   type BackupPayload
 } from '@/utils/db'
+import { gridLocation, normalizeLocation, rangeLocation } from '@/utils/position'
 
 /** 校验备份对象的必备字段，返回错误信息数组（为空表示通过） */
 export function validateBackup(input: unknown): { ok: boolean; errors: string[]; payload: BackupPayload | null } {
@@ -26,6 +27,11 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     if (!Array.isArray(obj[key])) errors.push(`${key} 字段缺失或不是数组`)
   }
   if (errors.length > 0) return { ok: false, errors, payload: null }
+  // 位置归一化：旧版备份（v2 及以前）的病害没有 location，统一落中央格并标为待定位
+  const decays = (obj.decays ?? []).map((decay) => ({
+    ...decay,
+    location: normalizeLocation(decay.location)
+  }))
   const payload: BackupPayload = {
     app: 'gbmuralarch',
     dbVersion: typeof obj.dbVersion === 'number' ? obj.dbVersion : DB_VERSION,
@@ -33,7 +39,7 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     halls: obj.halls ?? [],
     elements: obj.elements ?? [],
     layers: obj.layers ?? [],
-    decays: obj.decays ?? [],
+    decays,
     repairSteps: obj.repairSteps ?? []
   }
   return { ok: true, errors, payload }
@@ -163,7 +169,7 @@ export async function seedDemoData(): Promise<void> {
   const hallId = createId('hall')
   const elementIds = [createId('elem'), createId('elem')]
   const layerIds = elementIds.map(() => createId('lay'))
-  const decayIds = layerIds.map(() => createId('dec'))
+  const decayIds = [createId('dec'), createId('dec'), createId('dec'), createId('dec')]
 
   await db.transaction(
     'rw',
@@ -232,6 +238,7 @@ export async function seedDemoData(): Promise<void> {
           severity: '重度',
           areaCm2: 320.5,
           causeGuess: '地仗层脱胶，受檐口渗水影响',
+          location: gridLocation(7),
           repaired: false,
           repairedAt: null,
           createdAt: now,
@@ -239,11 +246,38 @@ export async function seedDemoData(): Promise<void> {
         },
         {
           id: decayIds[1],
+          layerId: layerIds[0],
+          type: '粉化',
+          severity: '轻度',
+          areaCm2: 46,
+          causeGuess: '表层颜料老化，指触有粉状物',
+          location: gridLocation(7),
+          repaired: false,
+          repairedAt: null,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: decayIds[2],
+          layerId: layerIds[0],
+          type: '剥落',
+          severity: '中度',
+          areaCm2: 96,
+          causeGuess: '沿枋心横向带状空鼓后剥落',
+          location: rangeLocation(0.12, 0.58),
+          repaired: false,
+          repairedAt: null,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: decayIds[3],
           layerId: layerIds[1],
           type: '龟裂',
           severity: '中度',
           areaCm2: 158,
           causeGuess: '木构件干缩引起画面开裂',
+          location: gridLocation(5),
           repaired: false,
           repairedAt: null,
           createdAt: now,

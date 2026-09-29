@@ -6,11 +6,13 @@ import { Plus, Position, Tools } from '@element-plus/icons-vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import FilterBar, { type FilterModel } from '@/components/common/FilterBar.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
+import HallLocationGrid from '@/components/position/HallLocationGrid.vue'
 import { useHallStore } from '@/stores/hallStore'
 import { useDecayStore } from '@/stores/decayStore'
 import { useRepairStore } from '@/stores/repairStore'
 import { seedDemoData } from '@/utils/export'
 import { formatArea } from '@/utils/severity'
+import { countByCell, countPendingUnrepaired } from '@/utils/position'
 import { ROOF_TYPES, STRUCTURE_TYPES, type Hall, type RoofType, type StructureType } from '@/types/hall'
 
 const router = useRouter()
@@ -68,6 +70,7 @@ const cards = computed(() =>
       return decay?.hallId === hall.id
     })
     const doneSteps = steps.filter((step) => step.state === '已完成').length
+    const hallDecays = hallStore.decaysByHall[hall.id] ?? []
     return {
       hall,
       stat,
@@ -79,7 +82,9 @@ const cards = computed(() =>
       repairedPercent: stat?.repairedPercent ?? 0,
       risk,
       stepCount: steps.length,
-      doneSteps
+      doneSteps,
+      cellCounts: countByCell(hallDecays),
+      pendingUnrepaired: countPendingUnrepaired(hallDecays)
     }
   })
 )
@@ -129,6 +134,20 @@ function openElements(hall: Hall): void {
 function openDecays(hall: Hall): void {
   hallStore.setCurrentHall(hall.id)
   decayStore.patchFilter({ halls: [hall.id] })
+  void router.push('/decays')
+}
+
+/** 殿宇卡片九宫格下钻：按该殿 + 该区域筛选档案台 */
+function openDecaysByCell(hall: Hall, cell: number): void {
+  hallStore.setCurrentHall(hall.id)
+  decayStore.patchFilter({ halls: [hall.id], cells: [cell], onlyPending: false })
+  void router.push('/decays')
+}
+
+/** 下钻到该殿的待定位病害 */
+function openDecaysPending(hall: Hall): void {
+  hallStore.setCurrentHall(hall.id)
+  decayStore.patchFilter({ halls: [hall.id], cells: [], onlyPending: true })
   void router.push('/decays')
 }
 
@@ -237,6 +256,18 @@ async function seed(): Promise<void> {
           />
         </div>
 
+        <div class="hall-card__location">
+          <div class="hall-card__location-head">
+            <span class="muted">构件位置 · 未修复数量（点格查看该区域病害）</span>
+          </div>
+          <HallLocationGrid
+            :cell-counts="card.cellCounts"
+            :pending-unrepaired="card.pendingUnrepaired"
+            @cell-click="(cell: number) => openDecaysByCell(card.hall, cell)"
+            @pending-click="openDecaysPending(card.hall)"
+          />
+        </div>
+
         <dl class="hall-card__meta">
           <div>
             <dt>病害面积</dt>
@@ -338,6 +369,20 @@ async function seed(): Promise<void> {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.hall-card__location {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: #fbf9f5;
+  border: 1px dashed #ddd3c2;
+  border-radius: 10px;
+}
+
+.hall-card__location-head {
+  font-size: 12px;
 }
 
 .hall-card__meta {

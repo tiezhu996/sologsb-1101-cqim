@@ -12,6 +12,7 @@ import {
 import type { Element } from '@/types/element'
 import type { PaintLayer } from '@/types/layer'
 import { SEVERITY_WEIGHT } from '@/utils/severity'
+import { isPendingLocation, locationMatches, locationText } from '@/utils/position'
 
 /** 病害档案台的一行：病害 + 所属层位 + 构件（含殿宇信息） */
 export interface DecayRow {
@@ -64,7 +65,9 @@ export const useDecayStore = defineStore('decay', () => {
       if (kw.length > 0) {
         const haystack = `${decay.type}${decay.severity}${decay.causeGuess}${layer?.patternName ?? ''}${
           layer?.pigment ?? ''
-        }${element?.name ?? ''}${element?.position ?? ''}`
+        }${element?.name ?? ''}${element?.position ?? ''}${locationText(decay.location)}${
+          isPendingLocation(decay.location) ? '待定位' : ''
+        }`
         if (!haystack.includes(kw)) return false
       }
       if (filter.value.halls.length > 0 && (!element || !filter.value.halls.includes(element.hallId))) return false
@@ -73,6 +76,10 @@ export const useDecayStore = defineStore('decay', () => {
       if (filter.value.types.length > 0 && !filter.value.types.includes(decay.type)) return false
       if (filter.value.severities.length > 0 && !filter.value.severities.includes(decay.severity)) return false
       if (filter.value.pigments.length > 0 && (!layer || !filter.value.pigments.includes(layer.pigment))) return false
+      if ((filter.value.cells.length > 0 || filter.value.onlyPending) &&
+        !locationMatches(decay.location, filter.value.cells, filter.value.onlyPending)) {
+        return false
+      }
       if (filter.value.onlyUnrepaired && decay.repaired) return false
       return true
     })
@@ -145,6 +152,8 @@ export const useDecayStore = defineStore('decay', () => {
       filter.value.types.length > 0 ||
       filter.value.severities.length > 0 ||
       filter.value.pigments.length > 0 ||
+      filter.value.cells.length > 0 ||
+      filter.value.onlyPending ||
       filter.value.onlyUnrepaired
   )
 

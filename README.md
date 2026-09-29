@@ -67,9 +67,9 @@ npm run preview    # 本地预览构建产物（http://localhost:21801）
 
 | 路由 | 页面 | 主要职责 | 消费模型 |
 | --- | --- | --- | --- |
-| `/halls` | 殿宇总览 | 新建殿宇、按年代与结构类型筛选，卡片回显病害总数与未修复数 | Hall、Element、PaintLayer、Decay |
-| `/halls/:id/elements` | 构件与层位 | 构件树 + 层位表格，新增构件与层位，挂接病害 | Element、PaintLayer、Decay |
-| `/decays` | 病害档案台 | 按类型 / 程度 / 颜料 / 殿宇 / 部位组合筛选，批量改严重程度与类型 | Decay、PaintLayer |
+| `/halls` | 殿宇总览 | 新建殿宇、按年代与结构类型筛选，卡片回显病害总数与未修复数、九宫格每格未修复数量（可下钻） | Hall、Element、PaintLayer、Decay |
+| `/halls/:id/elements` | 构件与层位 | 构件树 + 层位表格 + 构件示意图定位，新增构件与层位，挂接病害并按九宫格/横向比例定位 | Element、PaintLayer、Decay |
+| `/decays` | 病害档案台 | 按类型 / 程度 / 颜料 / 殿宇 / 部位 / **九宫格位置 / 待定位** 组合筛选，批量改严重程度与类型 | Decay、PaintLayer |
 | `/repair` | 修复工序时间线 | 拖拽调整工序先后，回填材料与责任人，完成即回写病害为已修复 | RepairStep、Decay |
 | `/backup` | 本地数据与备份 | 查看本地结构版本、JSON 导入导出、清空与样例数据 | 全部模型 |
 
@@ -84,10 +84,18 @@ npm run preview    # 本地预览构建产物（http://localhost:21801）
 | Hall 殿宇 | `src/types/hall.ts` | `id` `name` `era` `structureType`（大木/小式） `roofType`（庑殿/歇山/悬山） | 新建后进入构件录入 |
 | Element 构件 | `src/types/element.ts` | `id` `hallId` `position`（檐下/室内/梁枋/斗拱/天花） `name` `layerCount` `baseLayer` `status`（完好/观察/待修） | 按殿宇与部位二维筛选 |
 | PaintLayer 彩画层位 | `src/types/layer.ts` | `id` `elementId` `level`（由外至内） `patternName`（旋子/和玺/苏式） `pigment`（石青/石绿/朱砂/土黄） `thicknessMm` | 层位顺次叠压 |
-| Decay 病害记录 | `src/types/decay.ts` | `id` `layerId` `type`（起甲/剥落/空鼓/粉化/龟裂） `severity`（轻度/中度/重度） `areaCm2` `causeGuess` `repaired` | 同层位可叠加多条并汇总到殿宇 |
+| Decay 病害记录 | `src/types/decay.ts` | `id` `layerId` `type`（起甲/剥落/空鼓/粉化/龟裂） `severity`（轻度/中度/重度） `areaCm2` `causeGuess` `location`（九宫格 1~9 或横向起止比例，含待定位） `repaired` | 同层位可叠加多条并汇总到殿宇；同格多条按严重程度分槽摆放在构件示意图上 |
 | RepairStep 修复工序 | `src/types/repair.ts` | `id` `decayId` `seq` `name`（除尘/回贴/灌浆/补绘/封护） `material` `operator` `state`（未开始/进行中/已完成） | 拖拽排序，完成回写病害 |
 
-数据结构版本号 `DB_VERSION` 定义在 `src/utils/db.ts`，当前为 `v2`：`decays` 表补充 `repairedAt` 索引，并为修复状态缺失的历史数据按 `updatedAt` 回填，升级逻辑写在 Dexie 的 `.upgrade()` 中。
+数据结构版本号 `DB_VERSION` 定义在 `src/utils/db.ts`，当前为 `v3`：`decays` 表补充 `location` 构件示意图位置（非索引字段），旧记录没有位置时在升级迁移中统一归一化为「中央格（5）+ 待定位」；位置的归一化、九宫格换算、同格分槽摆放与格计数等纯函数集中在 `src/utils/position.ts`，类型定义在 `src/types/position.ts`。
+
+### 病害位置（构件示意图）
+
+- **九宫格区域**：构件示意按三行三列编号 1~9（上沿/中部/下沿 × 左/中/右，5 为中央），点格即可定位。
+- **横向起止比例**：条带状病害可填写横向起点/终点占构件长度的百分比（0~100），纵向上锚定中行，并按横向中点所在格作为锚定格（每条病害只归一格，可统计、可筛选）。
+- **同格多条分摆**：同一格内多条病害按严重程度各占固定槽位（轻/中/重分开），同槽多条再做确定性环形散开；点标记可查看对应病害，已修复标记为空心描边。
+- **待定位**：旧记录与暂不定位的病害落在中央格并标为「待定位」（灰色虚线圆点），档案台与殿宇页可单独筛出。
+- **筛选与汇总**：病害档案台支持按九宫格区域（多选）与待定位筛选（同步 URL query `cells` / `pend`）；殿宇总览卡片每格显示未修复数量，点格下钻到档案台。
 
 ---
 
@@ -97,13 +105,14 @@ npm run preview    # 本地预览构建产物（http://localhost:21801）
 sologsb-1101/
 ├── frontend/                     # 前端源码
 │   ├── src/
-│   │   ├── types/                # hall.ts element.ts layer.ts decay.ts repair.ts
+│   │   ├── types/                # hall.ts element.ts layer.ts decay.ts repair.ts position.ts
 │   │   ├── stores/               # hallStore.ts decayStore.ts repairStore.ts
 │   │   ├── components/common/    # SeverityTag.vue FilterBar.vue StatBadge.vue EmptyPanel.vue
+│   │   ├── components/position/  # SchematicCanvas.vue PositionField.vue LocationTag.vue LocationDialog.vue HallLocationGrid.vue
 │   │   ├── hooks/                # useDecayFilter.ts useIdbTable.ts
 │   │   ├── pages/                # HallList.vue ElementDetail.vue DecayBoard.vue RepairPlan.vue BackupView.vue
 │   │   ├── router/               # index.ts
-│   │   ├── utils/                # severity.ts db.ts export.ts
+│   │   ├── utils/                # severity.ts position.ts db.ts export.ts
 │   │   ├── styles/               # main.css
 │   │   ├── App.vue main.ts env.d.ts
 │   ├── public/favicon.svg
@@ -124,7 +133,7 @@ sologsb-1101/
 
 - **IndexedDB（Dexie，数据库名 `gbmuralarch`）**：5 张业务表 `halls` / `elements` / `layers` / `decays` / `repairSteps`，由 `src/utils/db.ts` 统一定义 schema、版本号与升级迁移；所有增删改查通过 `src/hooks/useIdbTable.ts` 封装，并用 `liveQuery` 提供响应式订阅。
 - **localStorage**：仅存元数据 —— `gbmuralarch:db-version`（本地结构版本）、`gbmuralarch:last-backup-at`（最近一次导出时间）、`gbmuralarch:ui-prefs`（当前选中殿宇、工序排序方式）。
-- **备份**：`/backup` 页面可导出 JSON（含 5 张表全量数据与结构版本），导入时先校验 `app` 字段与各集合数组完整性；支持「覆盖导入」与「追加导入（重新分配 id）」两种模式。
+- **备份**：`/backup` 页面可导出 JSON（含 5 张表全量数据与结构版本，病害 `location` 位置随记录一起导出），导入时先校验 `app` 字段与各集合数组完整性，并把缺失 / 损坏的位置归一化为中央待定位；支持「覆盖导入」与「追加导入（重新分配 id）」两种模式。
 - **隐私与无状态**：数据不上传任何服务器，容器不挂载命名卷；清理浏览器站点数据或更换浏览器会丢失档案，请定期导出备份。
 
 ---
