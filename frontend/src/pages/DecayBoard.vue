@@ -7,12 +7,14 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import FilterBar, { type FilterModel } from '@/components/common/FilterBar.vue'
 import SeverityTag from '@/components/common/SeverityTag.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
+import ElementMap from '@/components/common/ElementMap.vue'
+import LocationPicker from '@/components/common/LocationPicker.vue'
 import { useDecayFilter } from '@/hooks/useDecayFilter'
 import { useHallStore } from '@/stores/hallStore'
 import { useDecayStore } from '@/stores/decayStore'
 import { useRepairStore } from '@/stores/repairStore'
-import { DECAY_TYPES, type Decay, type DecayType, type Severity } from '@/types/decay'
-import { SEVERITIES } from '@/types/decay'
+import { DECAY_TYPES, SEVERITIES, CELL_LABELS, type Decay, type DecayLocation, type DecayType, type LocationCell, type Severity } from '@/types/decay'
+import { describeLocation } from '@/utils/location'
 import { formatArea, SEVERITY_COLOR } from '@/utils/severity'
 
 const router = useRouter()
@@ -26,6 +28,7 @@ const {
   typeOptions,
   severityOptions,
   pigmentOptions,
+  cellOptions,
   hallOptions,
   sortedRows,
   severityCounts,
@@ -45,7 +48,8 @@ const editForm = ref<{
   severity: Severity
   areaCm2: number
   causeGuess: string
-}>({ type: '起甲', severity: '轻度', areaCm2: 10, causeGuess: '' })
+  location: DecayLocation
+}>({ type: '起甲', severity: '轻度', areaCm2: 10, causeGuess: '', location: { cell: 5, xStart: null, xEnd: null, pending: false } })
 
 const filterModel = computed<FilterModel>(() => ({
   keyword: filter.value.keyword,
@@ -53,7 +57,13 @@ const filterModel = computed<FilterModel>(() => ({
   pos: filter.value.elementPositions,
   types: filter.value.types,
   sev: filter.value.severities,
-  pig: filter.value.pigments
+  pig: filter.value.pigments,
+  cells: filter.value.cells.map(String)
+}))
+
+const cellFilterOptions = cellOptions.map((cell) => ({
+  label: `${cell} ${CELL_LABELS[cell]}`,
+  value: String(cell)
 }))
 
 const filterSelects = computed(() => [
@@ -61,7 +71,8 @@ const filterSelects = computed(() => [
   { key: 'pos', label: '部位', options: positionOptions.map((item) => ({ label: item, value: item })) },
   { key: 'types', label: '病害类型', options: typeOptions.map((item) => ({ label: item, value: item })) },
   { key: 'sev', label: '严重程度', options: severityOptions.map((item) => ({ label: item, value: item })) },
-  { key: 'pig', label: '主色颜料', options: pigmentOptions.map((item) => ({ label: item, value: item })) }
+  { key: 'pig', label: '主色颜料', options: pigmentOptions.map((item) => ({ label: item, value: item })) },
+  { key: 'cells', label: '位置区域', options: cellFilterOptions }
 ])
 
 const selectedRows = computed(() =>
@@ -87,12 +98,29 @@ function handleFilterChange(value: FilterModel): void {
     elementPositions: Array.isArray(value.pos) ? value.pos : [],
     types: (Array.isArray(value.types) ? value.types : []) as DecayType[],
     severities: (Array.isArray(value.sev) ? value.sev : []) as Severity[],
-    pigments: Array.isArray(value.pig) ? value.pig : []
+    pigments: Array.isArray(value.pig) ? value.pig : [],
+    cells: (Array.isArray(value.cells) ? value.cells : [])
+      .map((item) => Number(item))
+      .filter((item): item is LocationCell => item >= 1 && item <= 9)
   })
 }
 
 function handleSwitch(value: boolean): void {
   patch({ onlyUnrepaired: value })
+}
+
+function handlePendingSwitch(value: boolean): void {
+  patch({ onlyPendingLocation: value })
+}
+
+function resetLocationFilter(): void {
+  patch({ cells: [], onlyPendingLocation: false })
+}
+
+/** 快捷：按三行三列格单独筛选位置 */
+function toggleCellFilter(cell: LocationCell): void {
+  const exists = filter.value.cells.includes(cell)
+  patch({ cells: exists ? filter.value.cells.filter((item) => item !== cell) : [...filter.value.cells, cell] })
 }
 
 function handleSelectionChange(rows: Array<{ decay: Decay }>): void {
@@ -152,7 +180,8 @@ function openEdit(row: { decay: Decay }): void {
     type: row.decay.type,
     severity: row.decay.severity,
     areaCm2: row.decay.areaCm2,
-    causeGuess: row.decay.causeGuess
+    causeGuess: row.decay.causeGuess,
+    location: { ...row.decay.location }
   }
   editDialogVisible.value = true
 }
@@ -163,10 +192,15 @@ async function submitEdit(): Promise<void> {
     type: editForm.value.type,
     severity: editForm.value.severity,
     areaCm2: editForm.value.areaCm2,
-    causeGuess: editForm.value.causeGuess.trim() || '待现场复核'
+    causeGuess: editForm.value.causeGuess.trim() || '待现场复核',
+    location: editForm.value.location
   })
   editDialogVisible.value = false
-  ElMessage.success('病害记录已更新')
+  ElMessage.success(
+    editingDecay.value.location.pending && !editForm.value.location.pending
+      ? '病害记录已更新，位置已完成定位'
+      : '病害记录已更新'
+  )
 }
 
 async function removeRow(row: { decay: Decay }): Promise<void> {
@@ -307,6 +341,43 @@ const severityPalette = SEVERITY_COLOR
       <el-button size="small" @click="bulkMarkRepaired(false)">标记未修复</el-button>
     </div>
 
+    <div class="section-card location-filter">
+      <div class="location-filter__head">
+        <h3>按位置筛选</h3>
+        <div class="location-filter__tools">
+          <el-tag v-if="decayStore.pendingLocationCount > 0" type="warning" effect="plain" round>
+            {{ decayStore.pendingLocationCount }} 条待定位（旧记录落中央）
+          </el-tag>
+          <el-switch
+            :model-value="filter.onlyPendingLocation"
+            active-text="仅看待定位"
+            inline-prompt
+            @update:model-value="handlePendingSwitch"
+          />
+        </div>
+      </div>
+      <div class="location-filter__body">
+        <ElementMap
+          :decays="decayStore.decays"
+          :size="240"
+          selectable
+          :selected-cells="filter.cells"
+          @cell-click="toggleCellFilter"
+        />
+        <div class="location-filter__legend">
+          <p class="muted">
+            示意图汇总全部病害（按所属格计数，徽标为该格未修复数）。点击格子即可把该位置加入 / 移出筛选，
+            当前已选：
+            <strong v-if="filter.cells.length">{{ filter.cells.map((c) => CELL_LABELS[c]).join('、') }}</strong>
+            <span v-else>无</span>
+          </p>
+          <el-button v-if="filter.cells.length > 0 || filter.onlyPendingLocation" size="small" @click="resetLocationFilter">
+            清空位置筛选
+          </el-button>
+        </div>
+      </div>
+    </div>
+
     <div class="section-card">
       <div class="section-card__head">
         <h3>病害清单</h3>
@@ -339,6 +410,18 @@ const severityPalette = SEVERITY_COLOR
         </el-table-column>
         <el-table-column label="彩画层位" min-width="180">
           <template #default="{ row }">{{ layerLabel(row.decay.layerId) }}</template>
+        </el-table-column>
+        <el-table-column label="位置" min-width="170">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              :class="{ 'location-pending': row.decay.location.pending }"
+              @click="toggleCellFilter(row.decay.location.cell)"
+            >
+              {{ describeLocation(row.decay.location) }}
+            </el-button>
+          </template>
         </el-table-column>
         <el-table-column label="成因初判" prop="decay.causeGuess" min-width="200" show-overflow-tooltip />
         <el-table-column label="修复" width="150">
@@ -403,6 +486,9 @@ const severityPalette = SEVERITY_COLOR
         <el-form-item label="成因初判">
           <el-input v-model="editForm.causeGuess" type="textarea" :rows="3" maxlength="120" show-word-limit />
         </el-form-item>
+        <el-form-item label="病害位置">
+          <LocationPicker v-model="editForm.location" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
@@ -437,5 +523,42 @@ const severityPalette = SEVERITY_COLOR
 .repair-progress {
   margin-left: 6px;
   font-size: 12px;
+}
+
+.location-filter__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.location-filter__head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.location-filter__tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.location-filter__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.location-filter__legend {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+
+.location-pending {
+  color: #b06b00 !important;
+  font-weight: 600;
 }
 </style>

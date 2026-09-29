@@ -6,6 +6,8 @@ import {
   stampBackupTime,
   type BackupPayload
 } from '@/utils/db'
+import { defaultLocation, normalizeLocation } from '@/utils/location'
+import type { Decay } from '@/types/decay'
 
 /** 校验备份对象的必备字段，返回错误信息数组（为空表示通过） */
 export function validateBackup(input: unknown): { ok: boolean; errors: string[]; payload: BackupPayload | null } {
@@ -26,6 +28,11 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     if (!Array.isArray(obj[key])) errors.push(`${key} 字段缺失或不是数组`)
   }
   if (errors.length > 0) return { ok: false, errors, payload: null }
+  // 位置字段归一化：旧版备份没有 location 时落在中央格并标记待定位
+  const decays: Decay[] = (obj.decays ?? []).map((decay) => ({
+    ...decay,
+    location: normalizeLocation((decay as Partial<Decay>).location)
+  }))
   const payload: BackupPayload = {
     app: 'gbmuralarch',
     dbVersion: typeof obj.dbVersion === 'number' ? obj.dbVersion : DB_VERSION,
@@ -33,7 +40,7 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     halls: obj.halls ?? [],
     elements: obj.elements ?? [],
     layers: obj.layers ?? [],
-    decays: obj.decays ?? [],
+    decays,
     repairSteps: obj.repairSteps ?? []
   }
   return { ok: true, errors, payload }
@@ -232,6 +239,7 @@ export async function seedDemoData(): Promise<void> {
           severity: '重度',
           areaCm2: 320.5,
           causeGuess: '地仗层脱胶，受檐口渗水影响',
+          location: { cell: 3, xStart: 0.62, xEnd: 0.88, pending: false },
           repaired: false,
           repairedAt: null,
           createdAt: now,
@@ -244,6 +252,7 @@ export async function seedDemoData(): Promise<void> {
           severity: '中度',
           areaCm2: 158,
           causeGuess: '木构件干缩引起画面开裂',
+          location: defaultLocation(),
           repaired: false,
           repairedAt: null,
           createdAt: now,

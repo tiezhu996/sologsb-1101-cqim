@@ -4,9 +4,11 @@ import { db } from '@/utils/db'
 import { useIdbTable } from '@/hooks/useIdbTable'
 import {
   createEmptyDecayFilter,
+  LOCATION_CELLS,
   type Decay,
   type DecayFilterState,
   type DecayType,
+  type LocationCell,
   type Severity
 } from '@/types/decay'
 import type { Element } from '@/types/element'
@@ -73,6 +75,8 @@ export const useDecayStore = defineStore('decay', () => {
       if (filter.value.types.length > 0 && !filter.value.types.includes(decay.type)) return false
       if (filter.value.severities.length > 0 && !filter.value.severities.includes(decay.severity)) return false
       if (filter.value.pigments.length > 0 && (!layer || !filter.value.pigments.includes(layer.pigment))) return false
+      if (filter.value.cells.length > 0 && !filter.value.cells.includes(decay.location.cell)) return false
+      if (filter.value.onlyPendingLocation && !decay.location.pending) return false
       if (filter.value.onlyUnrepaired && decay.repaired) return false
       return true
     })
@@ -137,6 +141,35 @@ export const useDecayStore = defineStore('decay', () => {
     return risk
   })
 
+  function emptyCellStat(): Record<LocationCell, { total: number; unrepaired: number }> {
+    const stat = {} as Record<LocationCell, { total: number; unrepaired: number }>
+    LOCATION_CELLS.forEach((cell) => {
+      stat[cell] = { total: 0, unrepaired: 0 }
+    })
+    return stat
+  }
+
+  /** 殿宇 → 九宫格各格病害数 / 未修复数（殿宇页示意每格显示未修复数量） */
+  const hallLocationStats = computed<
+    Record<string, Record<LocationCell, { total: number; unrepaired: number }>>
+  >(() => {
+    const stats: Record<string, Record<LocationCell, { total: number; unrepaired: number }>> = {}
+    rows.value.forEach((row) => {
+      if (!row.hallId) return
+      const hallStat = stats[row.hallId] ?? emptyCellStat()
+      const cellStat = hallStat[row.decay.location.cell]
+      cellStat.total += 1
+      if (!row.decay.repaired) cellStat.unrepaired += 1
+      stats[row.hallId] = hallStat
+    })
+    return stats
+  })
+
+  /** 待定位（旧记录落中央、尚未现场补录）病害数，支持「位置能单独筛」 */
+  const pendingLocationCount = computed(
+    () => decays.value.filter((decay) => decay.location.pending).length
+  )
+
   const hasFilter = computed(
     () =>
       filter.value.keyword.trim().length > 0 ||
@@ -145,6 +178,8 @@ export const useDecayStore = defineStore('decay', () => {
       filter.value.types.length > 0 ||
       filter.value.severities.length > 0 ||
       filter.value.pigments.length > 0 ||
+      filter.value.cells.length > 0 ||
+      filter.value.onlyPendingLocation ||
       filter.value.onlyUnrepaired
   )
 
@@ -235,6 +270,8 @@ export const useDecayStore = defineStore('decay', () => {
     repairedPercent,
     hallAggregate,
     hallRisk,
+    hallLocationStats,
+    pendingLocationCount,
     hasFilter,
     patchFilter,
     resetFilter,

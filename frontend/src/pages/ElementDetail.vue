@@ -11,7 +11,11 @@ import { useHallStore } from '@/stores/hallStore'
 import { useDecayStore } from '@/stores/decayStore'
 import { ELEMENT_POSITIONS, ELEMENT_STATUSES, type Element, type ElementPosition, type ElementStatus } from '@/types/element'
 import { PATTERN_NAMES, PIGMENTS, type PaintLayer, type PatternName, type Pigment } from '@/types/layer'
-import { DECAY_TYPES, SEVERITIES, type Decay, type DecayType, type Severity } from '@/types/decay'
+import { DECAY_TYPES, SEVERITIES, defaultLocation, type Decay, type DecayLocation, type DecayType, type Severity } from '@/types/decay'
+import LocationPicker from '@/components/common/LocationPicker.vue'
+import ElementMap from '@/components/common/ElementMap.vue'
+import { describeLocation } from '@/utils/location'
+import { SEVERITY_COLOR } from '@/utils/severity'
 
 const route = useRoute()
 const router = useRouter()
@@ -66,12 +70,14 @@ const decayForm = reactive<{
   severity: Severity
   areaCm2: number
   causeGuess: string
+  location: DecayLocation
 }>({
   layerId: '',
   type: '起甲',
   severity: '轻度',
   areaCm2: 10,
-  causeGuess: ''
+  causeGuess: '',
+  location: defaultLocation()
 })
 
 const elementRules: FormRules = {
@@ -179,6 +185,28 @@ function layerDecays(layerId: string): Decay[] {
   return hallStore.decaysOfLayer(layerId)
 }
 
+/** 当前构件的全部病害：喂给构件示意图 */
+const selectedDecays = computed<Decay[]>(() => {
+  if (!selectedElement.value) return []
+  const layerIds = hallStore.layersOfElement(selectedElement.value.id).map((layer) => layer.id)
+  return hallStore.decays.filter((decay) => layerIds.includes(decay.layerId))
+})
+
+/** 点示意图点标记：展开对应层位并高亮该病害所在行 */
+const focusDecayId = ref<string | null>(null)
+function focusDecay(decay: Decay): void {
+  focusDecayId.value = decay.id
+  expandedLayerIds.value = Array.from(new Set([...expandedLayerIds.value, decay.layerId]))
+}
+
+function locationText(decay: Decay): string {
+  return describeLocation(decay.location)
+}
+
+function decayRowClass({ row }: { row: Decay }): string {
+  return focusDecayId.value === row.id ? 'decay-row-focus' : ''
+}
+
 function layerSeverity(layerId: string): Severity | null {
   const list = layerDecays(layerId)
   if (list.length === 0) return null
@@ -188,6 +216,10 @@ function layerSeverity(layerId: string): Severity | null {
 }
 
 const severityEnum: Record<Severity, Severity> = { 轻度: '轻度', 中度: '中度', 重度: '重度' }
+
+function severityColor(severity: Severity): string {
+  return SEVERITY_COLOR[severity]
+}
 
 /** 模板中安全地把 null 收敛为 Severity 枚举 */
 function layerSeverityTag(layerId: string): Severity {
@@ -333,6 +365,7 @@ function openDecayDialog(layerId: string): void {
   decayForm.severity = '轻度'
   decayForm.areaCm2 = 10
   decayForm.causeGuess = ''
+  decayForm.location = defaultLocation()
   decayDialogVisible.value = true
 }
 
@@ -346,6 +379,7 @@ async function submitDecay(): Promise<void> {
     severity: decayForm.severity,
     areaCm2: decayForm.areaCm2,
     causeGuess: decayForm.causeGuess.trim() || '待现场复核',
+    location: decayForm.location,
     repaired: false,
     repairedAt: null
   })
@@ -497,6 +531,37 @@ const severityOptions = SEVERITIES
               </div>
             </div>
 
+            <div class="section-card element-map-card">
+              <div class="section-card__head">
+                <h3>构件示意与病害位置</h3>
+                <span class="muted">点标记 hover 查看病害，点击定位到下方层位记录</span>
+              </div>
+              <div class="element-map-card__body">
+                <ElementMap
+                  :decays="selectedDecays"
+                  :size="280"
+                  marker-clickable
+                  @marker-click="focusDecay"
+                />
+                <ul v-if="selectedDecays.length > 0" class="element-map-legend">
+                  <li
+                    v-for="decay in selectedDecays"
+                    :key="decay.id"
+                    class="element-map-legend__item"
+                    :class="{ 'is-focus': focusDecayId === decay.id }"
+                  >
+                    <span class="element-map-legend__dot" :style="{ backgroundColor: severityColor(decay.severity) }" />
+                    <span class="element-map-legend__text">
+                      {{ decay.type }} · {{ decay.severity }} · {{ locationText(decay) }}
+                      <em v-if="decay.location.pending" class="element-map-legend__pending">待定位</em>
+                    </span>
+                    <el-button size="small" text @click="focusDecay(decay)">定位</el-button>
+                  </li>
+                </ul>
+                <p v-else class="muted">该构件尚未记录病害。</p>
+              </div>
+            </div>
+
             <div class="stat-row">
               <StatBadge label="层位数量" :value="selectedLayers.length" suffix="层" icon="Files" tone="primary" />
               <StatBadge label="病害总数" :value="selectedStats.decayCount" suffix="条" icon="Histogram" tone="warning" />
@@ -532,11 +597,18 @@ const severityOptions = SEVERITIES
                           挂接病害
                         </el-button>
                       </div>
-                      <el-table v-if="layerDecays(row.id).length > 0" :data="layerDecays(row.id)" size="small">
+                      <el-table v-if="layerDecays(row.id).length > 0" :data="layerDecays(row.id)" size="small" :row-class-name="decayRowClass">
                         <el-table-column label="类型" prop="type" width="90" />
                         <el-table-column label="程度" width="130">
                           <template #default="{ row: decay }">
                             <SeverityTag :severity="decay.severity" :area-cm2="decay.areaCm2" size="small" plain />
+                          </template>
+                        </el-table-column>
+                        <el-table-column label="位置" min-width="180">
+                          <template #default="{ row: decay }">
+                            <span :class="{ 'location-pending': decay.location.pending }">
+                              {{ locationText(decay) }}
+                            </span>
                           </template>
                         </el-table-column>
                         <el-table-column label="成因初判" prop="causeGuess" min-width="200" />
@@ -684,6 +756,9 @@ const severityOptions = SEVERITIES
             placeholder="如：地仗层脱胶，受檐口渗水影响"
           />
         </el-form-item>
+        <el-form-item label="病害位置">
+          <LocationPicker v-model="decayForm.location" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="decayDialogVisible = false">取消</el-button>
@@ -738,6 +813,66 @@ const severityOptions = SEVERITIES
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.element-map-card__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.element-map-legend {
+  flex: 1 1 240px;
+  min-width: 220px;
+  max-height: 280px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.element-map-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.element-map-legend__item.is-focus {
+  background: #f5ead2;
+  outline: 1px solid var(--brand);
+}
+
+.element-map-legend__dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.element-map-legend__text {
+  flex: 1;
+  font-size: 13px;
+}
+
+.element-map-legend__pending {
+  margin-left: 6px;
+  padding: 0 6px;
+  font-style: normal;
+  font-size: 11px;
+  color: #b06b00;
+  background: #fdf7e8;
+  border-radius: 6px;
+}
+
+.location-pending {
+  color: #b06b00;
+}
+
+:deep(.decay-row-focus) {
+  background-color: #f5ead2 !important;
 }
 
 .layer-decays {

@@ -6,9 +6,11 @@ import { useHallStore } from '@/stores/hallStore'
 import {
   createEmptyDecayFilter,
   DECAY_TYPES,
+  LOCATION_CELLS,
   SEVERITIES,
   type DecayFilterState,
   type DecayType,
+  type LocationCell,
   type Severity
 } from '@/types/decay'
 import { ELEMENT_POSITIONS } from '@/types/element'
@@ -30,6 +32,7 @@ export interface UseDecayFilterResult {
   typeOptions: DecayType[]
   severityOptions: Severity[]
   pigmentOptions: string[]
+  cellOptions: LocationCell[]
   rows: ComputedRef<DecayRow[]>
   filteredRows: ComputedRef<DecayRow[]>
   sortedRows: ComputedRef<DecayRow[]>
@@ -85,6 +88,8 @@ export function useDecayFilter(options: UseDecayFilterOptions = {}): UseDecayFil
     if (filter.value.types.length) query.types = filter.value.types.join(',')
     if (filter.value.severities.length) query.sev = filter.value.severities.join(',')
     if (filter.value.pigments.length) query.pig = filter.value.pigments.join(',')
+    if (filter.value.cells.length) query.cell = filter.value.cells.join(',')
+    if (filter.value.onlyPendingLocation) query.todo = '1'
     if (filter.value.onlyUnrepaired) query.open = '1'
     await router.replace({ query })
   }
@@ -103,6 +108,10 @@ export function useDecayFilter(options: UseDecayFilterOptions = {}): UseDecayFil
         (SEVERITIES as string[]).includes(item)
       ),
       pigments: toArray(query.pig),
+      cells: toArray(query.cell)
+        .map((item) => Number(item))
+        .filter((item): item is LocationCell => (LOCATION_CELLS as number[]).includes(item)),
+      onlyPendingLocation: toBool(query.todo),
       onlyUnrepaired: toBool(query.open)
     })
   }
@@ -148,6 +157,7 @@ export function useDecayFilter(options: UseDecayFilterOptions = {}): UseDecayFil
     typeOptions: DECAY_TYPES,
     severityOptions: SEVERITIES,
     pigmentOptions: PIGMENTS,
+    cellOptions: LOCATION_CELLS,
     rows,
     filteredRows: rows,
     sortedRows,

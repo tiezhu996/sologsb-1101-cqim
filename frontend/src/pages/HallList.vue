@@ -6,11 +6,13 @@ import { Plus, Position, Tools } from '@element-plus/icons-vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import FilterBar, { type FilterModel } from '@/components/common/FilterBar.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
+import ElementMap from '@/components/common/ElementMap.vue'
 import { useHallStore } from '@/stores/hallStore'
 import { useDecayStore } from '@/stores/decayStore'
 import { useRepairStore } from '@/stores/repairStore'
 import { seedDemoData } from '@/utils/export'
 import { formatArea } from '@/utils/severity'
+import { CELL_LABELS, type Decay, type LocationCell } from '@/types/decay'
 import { ROOF_TYPES, STRUCTURE_TYPES, type Hall, type RoofType, type StructureType } from '@/types/hall'
 
 const router = useRouter()
@@ -63,6 +65,9 @@ const cards = computed(() =>
     const stat = hallStore.statMap[hall.id]
     const aggregate = decayStore.hallAggregate[hall.id]
     const risk = decayStore.hallRisk[hall.id] ?? 0
+    const decays = hallStore.decaysByHall[hall.id] ?? []
+    const cellStats = decayStore.hallLocationStats[hall.id]
+    const pendingCount = decays.filter((decay) => decay.location.pending).length
     const steps = repairStore.steps.filter((step) => {
       const decay = decayStore.rows.find((row) => row.decay.id === step.decayId)
       return decay?.hallId === hall.id
@@ -79,13 +84,31 @@ const cards = computed(() =>
       repairedPercent: stat?.repairedPercent ?? 0,
       risk,
       stepCount: steps.length,
-      doneSteps
+      doneSteps,
+      decays,
+      cellStats,
+      pendingCount
     }
   })
 )
 
 const structOptions = STRUCTURE_TYPES.map((type) => ({ label: type, value: type }))
 const roofOptions = ROOF_TYPES.map((type) => ({ label: type, value: type }))
+const cellLabels = CELL_LABELS
+
+/** 殿宇卡片示意点标记：跳转到病害档案台并带上该殿宇 + 位置筛选 */
+function filterByCell(card: { hall: Hall }, cell: LocationCell): void {
+  hallStore.setCurrentHall(card.hall.id)
+  decayStore.patchFilter({ halls: [card.hall.id], cells: [cell] })
+  void router.push('/decays')
+}
+
+/** 点标记：跳转档案台并只看这一条病害（用关键字 + 殿宇难以精确，改为按格 + 位置筛选） */
+function openDecayOnBoard(hall: Hall, decay: Decay): void {
+  hallStore.setCurrentHall(hall.id)
+  decayStore.patchFilter({ halls: [hall.id], cells: [decay.location.cell] })
+  void router.push('/decays')
+}
 
 function handleFilterChange(value: FilterModel): void {
   hallStore.keyword = value.keyword
@@ -237,6 +260,38 @@ async function seed(): Promise<void> {
           />
         </div>
 
+        <div class="hall-card__map">
+          <div class="hall-card__map-head">
+            <span class="muted">病害位置示意（格内数字为未修复数）</span>
+            <el-tag v-if="card.pendingCount > 0" type="warning" size="small" effect="plain">
+              {{ card.pendingCount }} 条待定位
+            </el-tag>
+          </div>
+          <div class="hall-card__map-body">
+            <ElementMap
+              :decays="card.decays"
+              :size="168"
+              selectable
+              @cell-click="(cell: LocationCell) => filterByCell(card, cell)"
+              @marker-click="(decay: Decay) => openDecayOnBoard(card.hall, decay)"
+              marker-clickable
+            />
+            <div class="hall-card__map-cells">
+              <button
+                v-for="cell in 9"
+                :key="cell"
+                type="button"
+                class="hall-card__cell-quick"
+                :class="{ 'has-unrepaired': card.cellStats?.[cell as LocationCell]?.unrepaired }"
+                @click="filterByCell(card, cell as LocationCell)"
+              >
+                <span>{{ cellLabels[cell as LocationCell] }}</span>
+                <em>{{ card.cellStats?.[cell as LocationCell]?.unrepaired ?? 0 }}</em>
+              </button>
+            </div>
+          </div>
+        </div>
+
         <dl class="hall-card__meta">
           <div>
             <dt>病害面积</dt>
@@ -338,6 +393,62 @@ async function seed(): Promise<void> {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.hall-card__map {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hall-card__map-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hall-card__map-body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.hall-card__map-cells {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.hall-card__cell-quick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 0;
+  background: #fffdf8;
+  border: 1px solid #e6e0d6;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #8c8479;
+}
+
+.hall-card__cell-quick:hover {
+  border-color: var(--brand);
+  background: #f5ead2;
+}
+
+.hall-card__cell-quick em {
+  font-style: normal;
+  font-weight: 700;
+  font-size: 13px;
+  color: #a99c84;
+}
+
+.hall-card__cell-quick.has-unrepaired em {
+  color: #c0392b;
 }
 
 .hall-card__meta {

@@ -11,6 +11,7 @@ import { useRepairStore } from '@/stores/repairStore'
 import type { RepairGroup } from '@/types/repair'
 import { REPAIR_STATES, REPAIR_STEP_NAMES, type RepairState, type RepairStep, type RepairStepName } from '@/types/repair'
 import { formatArea } from '@/utils/severity'
+import { describeLocation } from '@/utils/location'
 
 const hallStore = useHallStore()
 const decayStore = useDecayStore()
@@ -118,7 +119,8 @@ function groupSubtitle(group: RepairGroup): string {
   if (!layer) return '层位已删除'
   const level = `第 ${layer.level} 层 ${layer.patternName}/${layer.pigment}`
   if (!decay) return level
-  return `${level} · 病害 ${decay.type} · ${formatArea(decay.areaCm2)}`
+  const location = describeLocation(decay.location)
+  return `${level} · 病害 ${decay.type} · ${formatArea(decay.areaCm2)} · 位置 ${location}`
 }
 
 function openStepDialog(decayId: string, step?: RepairStep): void {

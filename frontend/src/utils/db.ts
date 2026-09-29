@@ -4,9 +4,10 @@ import type { Element } from '@/types/element'
 import type { PaintLayer } from '@/types/layer'
 import type { Decay } from '@/types/decay'
 import type { RepairStep } from '@/types/repair'
+import { normalizeLocation } from '@/utils/location'
 
 /** 本地结构版本号：新增/修改表结构时必须递增，并补充 upgrade 迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 本地存储键名（localStorage 侧的少量元数据） */
 export const LS_KEYS = {
@@ -74,6 +75,24 @@ export class MuralArchDatabase extends Dexie {
             if (typeof decay.repaired !== 'boolean') {
               decay.repaired = false
             }
+          })
+      })
+    // v3：病害补充「构件示意位置」（三行三列格 + 横向起止比例）。
+    // 旧记录没有位置：落在中央格（5=正中）并标记 pending（待定位）。
+    this.version(DB_VERSION)
+      .stores({
+        halls: 'id, name, era, structureType, roofType, updatedAt',
+        elements: 'id, hallId, position, status, updatedAt',
+        layers: 'id, elementId, level, patternName, pigment',
+        decays: 'id, layerId, type, severity, repaired, repairedAt, location.cell, updatedAt',
+        repairSteps: 'id, decayId, seq, name, state, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Decay>('decays')
+          .toCollection()
+          .modify((decay) => {
+            decay.location = normalizeLocation((decay as unknown as { location?: unknown }).location)
           })
       })
   }
